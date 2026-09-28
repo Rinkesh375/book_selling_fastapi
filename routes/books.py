@@ -2,8 +2,9 @@ from fastapi import Depends, HTTPException, APIRouter, Query,status
 from sqlmodel import Session, select
 from database import get_session
 from typing import Optional
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
-from models.book import Book, BookCreate, BookRead
+from models.book import Book, BookCreate, BookRead, BookUpdate
 
 from auth import verify_api_key
 
@@ -83,5 +84,100 @@ def create_book(
     session.add(book)
     session.commit()
     session.refresh(book)
+
+    return book
+
+
+
+@router.patch(
+    "/{book_id}",
+    response_model=BookRead,
+    status_code=status.HTTP_200_OK,
+)
+def update_book(
+    book_id: int,
+    updates: BookUpdate,
+    session: Session = Depends(get_session),
+    api_key: str = Depends(verify_api_key),
+) -> BookRead:
+    book = session.get(Book, book_id)
+
+    if book is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Book with id {book_id} not found",
+        )
+
+    update_data = updates.model_dump(exclude_unset=True)
+
+    if not update_data:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No fields provided for update",
+        )
+
+    for field, value in update_data.items():
+        if isinstance(value, str):
+            value = value.strip()
+
+        setattr(book, field, value)
+
+    try:
+        session.add(book)
+        session.commit()
+        session.refresh(book)
+
+    except IntegrityError:
+        session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Unable to update book due to a data conflict",
+        )
+
+    except Exception:
+        session.rollback()
+        raise
+
+    return book
+
+
+
+@router.patch(
+    "/{book_id}/sold",
+    response_model=BookRead,
+    status_code=status.HTTP_200_OK,
+)
+def mark_book_sold(
+    book_id: int,
+    session: Session = Depends(get_session),
+    api_key: str = Depends(verify_api_key),
+) -> BookRead:
+    book = session.get(Book, book_id)
+
+    if book is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Book with id {book_id} not found",
+        )
+
+    if book.is_sold:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Book is already sold",
+        )
+
+    book.is_sold = True
+
+    try:
+        session.add(book)
+        session.commit()
+        session.refresh(book)
+
+    except SQLAlchemyError:
+        session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to mark book as sold",
+        )
 
     return book
